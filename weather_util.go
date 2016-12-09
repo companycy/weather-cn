@@ -14,12 +14,12 @@ import (
 
 type Weather []map[string]string
 
-func main() {
-	err := getCityCode()
-	if err != nil {
-		fmt.Println(err)
-	}
-}
+// func main() {
+// 	err := getCityCode()
+// 	if err != nil {
+// 		fmt.Println(err)
+// 	}
+// }
 
 // 从中国天气网获取city code, 可能还是直接读取xml文件更好
 // refer to link: https://my.oschina.net/cart/blog/189839
