@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"encoding/xml"
 	"flag"
-	"fmt"
 	"golang.org/x/net/html"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
-	"log"
 
 	"github.com/emicklei/go-restful"
 	"github.com/golang/glog"
@@ -283,7 +282,6 @@ func redisSet(client *redis.Client, key string, weather map[string]interface{}) 
 		case day1: // today
 			// glog.Info(reflect.TypeOf(v))
 			if s, ok := v.([]string); ok {
-				// m := make(map[string][]string)
 				var weatherStr string
 				for i := 0; i < len(s); i++ {
 					s1, _ := handleWeatherStr(s[i], nil) // TODO
@@ -424,9 +422,8 @@ func needUpdate(val string) bool {
 // ["":{}, ]
 // 7d: [08日: [15时: {}, 24时: {}],  09日: [15时: {}, 24时: {}], 10日:[15时: {}, 24时: {}],  ]
 // [08日: [15时: {}, 24时: {}],  09日: [15时: {}, 24时: {}], 10日:[15时: {}, 24时: {}],  ]
+// 101190401_7d is 15日20时:n01_多云_5_东北风_微风|15日23时:n01_多云_1_东北风_3-4级|16日02时:n01_多云_1_东北风_微风
 func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string) error {
-	// out := make(map[string]string)
-	// var l []map[string]map[string]string
 	sss := strings.Split(val, "|")
 	for i := 0; i < len(sss); i++ {
 		ss := strings.Split(sss[i], ":")
@@ -544,6 +541,7 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 			weather, err := getWeatherFromRemote(info.weatherCode, remoteServers[0])
 			if err != nil {
 				glog.Infof("Fail to get from %s, try other servers", remoteServers[0])
+				continue
 				// TODO: not necessary now
 				// getWeatherFromRemote2(info, key)
 			} else {
@@ -554,15 +552,16 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 				}
 				val = weatherStr
 
-				err = weatherToJson2(val, &ret2) // prepare for json
-				if err != nil {
-					// TODO:
-				}
+				// err = weatherToJson2(val, &ret2) // prepare for json
+				// if err != nil {
+				// 	// TODO:
+				// }
 				// log.Println(ret2)
 			}
 
 		} else if err != nil {
 			glog.Errorf("Fail to get weather from client %s", err)
+			continue
 		}
 
 		err = weatherToJson2(val, &ret2)
@@ -580,7 +579,7 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 
 func main() {
 	ws := new(restful.WebService)
-	ws.Route(ws.GET("/v1/query").To(weatherHandler))
+	ws.Route(ws.GET("/v1/query/forcast").To(weatherHandler))
 	restful.Add(ws)
 	http.ListenAndServe(":8080", nil)
 }
