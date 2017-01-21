@@ -94,7 +94,7 @@ func getWeatherFromRemote(cityPy string) (*map[string]interface{}, error) {
 	ret := make(map[string]interface{})
 	for i := 0; i < len(weather.RegionsWeather); i++ {
 		ret[weather.RegionsWeather[i].PyName] = weather.RegionsWeather[i]
-		// fmt.Println(weather.RegionsWeather[i])
+		// log.Println(weather.RegionsWeather[i])
 	}
 
 	return &ret, nil
@@ -146,7 +146,7 @@ func redisSet(client *redis.Client, key string, weather map[string]interface{}) 
 		if !ok {
 			continue
 		}
-		// fmt.Printf("%v\n", rw)
+		// log.Printf("%v\n", rw)
 
 		weatherStr := strconv.FormatFloat(rw.CityX, 'f', 2, 32) +
 			"_" + strconv.FormatFloat(rw.CityY, 'f', 2, 32) +
@@ -189,19 +189,39 @@ func init() {
 	}
 }
 
+// jiangsu_rt is xuzhou:xx_xx_xx|wuxi:xx_xx_xx|...
 func needUpdate(val string) bool {
-	day := val[:2]
-	_, _, curDay := time.Now().Date()
-	i, err := strconv.Atoi(day)
+	sss := strings.Split(val, "|")
+	ss := strings.Split(sss[0], ":")
+	s := strings.Split(ss[1], "_")
+	wTime := s[len(s)-1] // last item
+
+	wHour, err := strconv.Atoi(wTime[:2])
 	if err != nil {
-		glog.Error("fail to get day %s", err)
-		return true
+		glog.Errorf("fail to get weather's hour")
+		return false
 	}
 
-	glog.Info("from redis ", i, " cur day ", curDay)
-	if i != curDay {
-		return true
+	wMinute, err := strconv.Atoi(wTime[2:])
+	if err != nil {
+		glog.Errorf("fail to get weather's minute")
+		return false
 	}
+
+	now := time.Now()
+	curHour := now.Hour()
+	curMinute := now.Minute()
+
+	if curHour < wHour { // do nothing
+
+	} else {
+		diffHour := curHour - wHour
+		diffMinutes := diffHour*60 + curMinute - wMinute
+		if diffMinutes >= 30 {
+			return true
+		}
+	}
+
 	return false
 }
 
@@ -257,7 +277,8 @@ func weatherToJson(val string, ret *map[string]map[string]string) error {
 		j++
 		m["humidity"] = v[j]
 		j++
-		m["time"] = v[j]
+		m["time"] = v[j][:2] + ":" + v[j][2:]
+		// log.Println(m["time"], v[j])
 		j++
 
 		(*ret)[cityName] = m // in case m[cityName] is not assigned
@@ -296,8 +317,8 @@ func realtimeWeatherHandler(req *restful.Request, resp *restful.Response) {
 		glog.Infof("key %s", key)
 		val, err := redisClient.Get(key).Result()
 		ret2 := make(map[string]map[string]string)
-		if err == redis.Nil { //  || needUpdate(val)
-			glog.Infof("realtime weather for %s is nil, update from remote", key)
+		if err == redis.Nil || needUpdate(val) {
+			glog.Infof("realtime weather for %s is nil or outdated, update from remote", key)
 			weather, err := getWeatherFromRemote(dstProvincesPyList[i])
 			if err != nil {
 				ret := map[string]interface{}{
