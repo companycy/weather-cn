@@ -160,7 +160,12 @@ func redisSet(client *redis.Client, key string, weather map[string]interface{}) 
 		str += k + ":" + weatherStr + "|"
 	}
 
-	str = str[:len(str)-1]
+	// insert to head of str
+	curYear, curMonth, curDay := time.Now().Date()
+	sMonth := fmt.Sprintf("%02d", curMonth)
+	sDay := fmt.Sprintf("%02d", curDay)
+	str = strconv.Itoa(curYear) + sMonth + sDay + "|" + str[:len(str)-1]
+
 	err := client.Set(key, str, expiration).Err()
 	if err != nil {
 		glog.Errorf("Fail to set %s in redis", key)
@@ -189,10 +194,32 @@ func init() {
 	}
 }
 
-// jiangsu_rt is xuzhou:xx_xx_xx|wuxi:xx_xx_xx|...
+// jiangsu_rt is 20170122|xuzhou:xx_xx_xx|wuxi:xx_xx_xx|...
 func needUpdate(val string) bool {
+	now := time.Now()
+	curYear, curMonth, curDay := now.Date()
 	sss := strings.Split(val, "|")
-	ss := strings.Split(sss[0], ":")
+	wymd := sss[0]
+	wYear, err := strconv.Atoi(wymd[:4])
+	if err != nil {
+		return true
+	}
+
+	wMonth, err := strconv.Atoi(wymd[4:6])
+	if err != nil {
+		return true
+	}
+
+	wDay, err := strconv.Atoi(wymd[6:8])
+	if err != nil {
+		return true
+	}
+
+	if curYear != wYear || int(curMonth) != wMonth || curDay != wDay {
+		return true
+	}
+
+	ss := strings.Split(sss[1], ":")
 	s := strings.Split(ss[1], "_")
 	wTime := s[len(s)-1] // last item
 
@@ -208,7 +235,6 @@ func needUpdate(val string) bool {
 		return false
 	}
 
-	now := time.Now()
 	curHour := now.Hour()
 	curMinute := now.Minute()
 
@@ -216,7 +242,12 @@ func needUpdate(val string) bool {
 
 	} else {
 		diffHour := curHour - wHour
-		diffMinutes := diffHour*60 + curMinute - wMinute
+		diffMinutes := curMinute - wMinute
+		if diffMinutes < 0 {
+			return true
+		}
+
+		diffMinutes += diffHour * 60
 		if diffMinutes >= 30 {
 			return true
 		}
@@ -226,12 +257,12 @@ func needUpdate(val string) bool {
 }
 
 // {'jiangsu' : { 'xuzhou': {}, 'wuxi': {} }, 'beijing': {'haidian': {}, 'chaoyang': {}},  }
-// jiangsu_rt is xuzhou:xx_xx_xx|wuxi:xx_xx_xx|...
+// jiangsu_rt is 20170122|xuzhou:xx_xx_xx|wuxi:xx_xx_xx|...
 func weatherToJson(val string, ret *map[string]map[string]string) error {
 	glog.Infof("weatherStr: %s", val)
 
 	sss := strings.Split(val, "|")
-	for i := 0; i < len(sss); i++ {
+	for i := 1; i < len(sss); i++ { // sss[0] is time info
 		ss := strings.Split(sss[i], ":")
 		if len(ss) != 2 {
 			glog.Errorf("sth wrong when split weather str %s", ss)
