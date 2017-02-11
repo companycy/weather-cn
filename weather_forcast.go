@@ -57,7 +57,7 @@ func printWeather(m map[string]interface{}) {
 }
 
 func getWeatherFromRemote(cityCode string, srvCode int) (*map[string]interface{}, error) {
-	glog.Infof("get weather from remote")
+	glog.Infof("get weather for city %s from remote %v", cityCode, srvCode)
 
 	if srvCode != WCC { // TODO
 		glog.Errorf("only www.weather.com.cn supported now")
@@ -179,7 +179,13 @@ type CityCode struct {
 	} `xml:"province"`
 }
 
+var cityInfoSet = make(map[string]CityInfo)
 var countyInfoSet = make(map[string]CountyInfo)
+
+type CityInfo struct {
+	id, name    string
+	countyNames []string
+}
 
 type CountyInfo struct {
 	id, name, weatherCode string
@@ -211,8 +217,15 @@ func loadCitycode() error {
 		province := cc.Provinces[i]
 		for j := 0; j < len(province.Cities); j++ {
 			city := province.Cities[j]
+
+			cityInfo := CityInfo{
+				id:   city.Id,
+				name: city.Name,
+			}
+
 			for k := 0; k < len(city.Counties); k++ {
 				county := city.Counties[k]
+				cityInfo.countyNames = append(cityInfo.countyNames, county.Name)
 				// fmt.Println(county)
 
 				countyInfoSet[county.Name] = CountyInfo{
@@ -221,17 +234,26 @@ func loadCitycode() error {
 					weatherCode: county.WeatherCode,
 				}
 			}
+			cityInfoSet[city.Name] = cityInfo
 		}
 	}
 	return nil
 }
 
 func getCountyInfo(cityName string) (*CountyInfo, error) {
-	glog.Infof("get county code")
+	glog.Infof("get county code %s", cityName)
 
 	if info, ok := countyInfoSet[cityName]; ok {
 		return &info, nil
 	} else {
+		if info2, ok := cityInfoSet[cityName]; ok { // relay to sub county
+			glog.Infof("try to relay to sub county %s", cityName)
+			newName := info2.countyNames[0]
+			if info3, ok := countyInfoSet[newName]; ok {
+				return &info3, nil
+			}
+		}
+
 		return nil, nil
 	}
 }
@@ -271,7 +293,7 @@ func handleWeatherStr(s string, out map[string]interface{}) (string, error) {
 const expiration = time.Duration(0) // todo:
 
 func redisSet(client *redis.Client, key string, weather map[string]interface{}) (string, error) {
-	glog.Infof("redis set ")
+	glog.Infof("redis set value for key: %s", key)
 
 	for k, v := range weather {
 		if !strings.HasSuffix(key, k) {
@@ -290,10 +312,10 @@ func redisSet(client *redis.Client, key string, weather map[string]interface{}) 
 				weatherStr = weatherStr[:len(weatherStr)-1]
 				err := client.Set(key, weatherStr, expiration).Err()
 				if err != nil {
-					glog.Errorf("Fail to set %s in redis", key)
+					glog.Errorf("fail to set %s in redis", key)
 					return "", err
 				} else {
-					glog.Infof("Set %s : %s", key, weatherStr)
+					glog.Infof("set key %s : value %s", key, weatherStr)
 					return weatherStr, nil
 				}
 			}
@@ -315,10 +337,10 @@ func redisSet(client *redis.Client, key string, weather map[string]interface{}) 
 
 				err := client.Set(key, weatherStr, expiration).Err()
 				if err != nil {
-					glog.Errorf("Fail to set %s in redis", key)
+					glog.Errorf("fail to set %s in redis", key)
 					return "", err
 				} else {
-					glog.Infof("Set %s", key, weatherStr)
+					glog.Infof("set key %s: value %s", key, weatherStr)
 					return weatherStr, nil
 				}
 			}
@@ -327,7 +349,7 @@ func redisSet(client *redis.Client, key string, weather map[string]interface{}) 
 			if ss, ok := v.([][]string); ok {
 				for i := 0; i < len(ss); i++ {
 					for j := 0; j < len(ss[i]); j++ {
-						glog.Infof("  ", ss[i][j])
+						glog.Infof("month weather:  ", ss[i][j])
 					}
 				}
 			}
@@ -373,7 +395,7 @@ func getWeatherFromRemote2(info *CountyInfo, key string) {
 			weather, err :=
 				getWeatherFromRemote(info.weatherCode, remoteServers[i])
 			if err != nil {
-				glog.Errorf("Fail to get weather from %s", remoteServers[i])
+				glog.Errorf("fail to get weather from %s", remoteServers[i])
 				// ret := map[string]interface{}{
 				// 	"ret_code": 5000,
 				// 	"err":      "fail to get county code",
@@ -411,7 +433,7 @@ func needUpdate(val string) bool {
 		return true
 	}
 
-	glog.Info("from redis ", i, " cur day ", curDay)
+	glog.Infof("time in redis: %v while cur day: ", curDay)
 	if i != curDay {
 		return true
 	}
@@ -450,7 +472,7 @@ func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string
 		// out[hdr] = m
 		key := hdr[:2] + "日"
 		if len(*ret) == 0 {
-			glog.Info("empty, init for first time")
+			glog.Infof("empty, init for first time %s", key)
 			*ret = append(*ret, map[string][]map[string]map[string]string{
 				key: make([]map[string]map[string]string, 0),
 			})
@@ -458,7 +480,7 @@ func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string
 
 		vv, ok := (*ret)[len(*ret)-1][key]
 		if !ok {
-			glog.Info("not existing required key, create it")
+			glog.Infof("not existing required key %s, create it", key)
 			*ret = append(*ret, map[string][]map[string]map[string]string{
 				key: make([]map[string]map[string]string, 0),
 			})
@@ -485,7 +507,7 @@ func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string
 
 func weatherHandler(req *restful.Request, resp *restful.Response) {
 	cityName := req.QueryParameter("cn") // cityname
-	glog.Infof("weatherHandler %s...", cityName)
+	glog.Infof("weatherHandler for %s...", cityName)
 
 	// try to get weather info locally first
 	// if there is no result from local, then get weather info from remote
@@ -494,7 +516,7 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 
 	info, err := getCountyInfo(cityName)
 	if info != nil {
-		glog.Info(info.id, info.weatherCode, info.name)
+		glog.Infof("id: %s, code: %s, name: %s", info.id, info.weatherCode, info.name)
 	} else {
 		glog.Errorf("fail to get county code %s", err)
 		ret := map[string]interface{}{
@@ -540,7 +562,7 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 			glog.Infof("weather for %s is nil or outdated, update from remote", key)
 			weather, err := getWeatherFromRemote(info.weatherCode, remoteServers[0])
 			if err != nil {
-				glog.Infof("Fail to get from %s, try other servers", remoteServers[0])
+				glog.Infof("fail to get from %s, try other servers", remoteServers[0])
 				continue
 				// TODO: not necessary now
 				// getWeatherFromRemote2(info, key)
@@ -560,7 +582,7 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 			}
 
 		} else if err != nil {
-			glog.Errorf("Fail to get weather from client %s", err)
+			glog.Errorf("fail to get weather from client %s", err)
 			continue
 		}
 
@@ -571,7 +593,7 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 		// log.Println(ret2)
 
 		ret[days[i]] = ret2
-		glog.Infof("Weather info for %s is %s %v\n", key, val, err)
+		glog.Infof("weather info for %s is %s %v\n", key, val, err)
 	}
 
 	resp.WriteAsJson(ret)
