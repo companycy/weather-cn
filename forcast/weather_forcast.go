@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
 	"strconv"
 	"strings"
@@ -64,20 +65,14 @@ func getWeatherFromRemote(cityCode string, srvCode int) (*map[string]interface{}
 		return nil, nil
 	}
 
-	// get html first
-	url := "http://www.weather.com.cn/weather1d/" + cityCode + ".shtml"
-	resp, err := http.Get(url)
-	if err != nil {
-		glog.Errorf(err.Error())
-		return nil, err
+	htmlStr, err := getHtmlFromRemote(cityCode, srvCode)
+	if err != nil || htmlStr == "" {
+		glog.Errorf("fail to get html from remote %v", cityCode)
+		return nil, nil
 	}
-	defer resp.Body.Close()
 
-	buf := new(bytes.Buffer)
-	buf.ReadFrom(resp.Body)
-	s := strings.Replace(buf.String(), "^M", "", -1)
-
-	buf = bytes.NewBufferString(s)
+	s := strings.Replace(htmlStr, "^M", "", -1)
+	buf := bytes.NewBufferString(s)
 	z := html.NewTokenizer(strings.NewReader(buf.String()))
 	for {
 		tt := z.Next()
@@ -123,24 +118,26 @@ func getWeatherFromRemote(cityCode string, srvCode int) (*map[string]interface{}
 			vm.Run(c)
 			hour3data, err := vm.Get("hour3data")
 			if err != nil {
-				glog.Errorf(err.Error())
+				glog.Errorf("fail to get hour3data, %v", err.Error())
 				continue
 			}
 
 			if !hour3data.IsObject() {
-				glog.Errorf(err.Error())
+				glog.Errorf("hour3data is not obj, %v", err.Error())
 				continue
 			}
 
+			// glog.Infof("hour3data to export: %v", hour3data)
 			obj, err := hour3data.Export()
 			if err != nil {
-				glog.Errorf(err.Error())
+				glog.Errorf("fail to export hour3data, %v", err.Error())
 				continue
 			}
 
+			// glog.Infof("hour3data obj to convert: %v", obj)
 			m, ok := obj.(map[string]interface{})
 			if !ok {
-				glog.Errorf(err.Error())
+				glog.Errorf("fail to conver obj, %v", err.Error())
 				continue
 			}
 
@@ -150,6 +147,7 @@ func getWeatherFromRemote(cityCode string, srvCode int) (*map[string]interface{}
 		}
 	}
 
+	glog.Errorf("fail to get weather from remote")
 	return nil, nil
 }
 
@@ -179,8 +177,8 @@ type CityCode struct {
 	} `xml:"province"`
 }
 
-var cityInfoSet = make(map[string]CityInfo)
-var countyInfoSet = make(map[string]CountyInfo)
+var cityInfoSet *map[string]CityInfo
+var countyInfoSet *map[string]CountyInfo
 
 type CityInfo struct {
 	id, name    string
@@ -191,28 +189,30 @@ type CountyInfo struct {
 	id, name, weatherCode string
 }
 
-func loadCitycode() error {
+func loadCitycode() (*map[string]CityInfo, *map[string]CountyInfo, error) {
 	glog.Infof("load city code...")
 
 	xmlFile, err := os.Open("weather-cn.xml")
 	if err != nil {
-		glog.Errorf(err.Error())
-		return err
+		glog.Errorf("fail to open xml file %v", err.Error())
+		return nil, nil, err
 	}
 	defer xmlFile.Close()
 
 	xmlData, err := ioutil.ReadAll(xmlFile)
 	if err != nil {
-		glog.Errorf(err.Error())
-		return err
+		glog.Errorf("fail to read xml file %v", err.Error())
+		return nil, nil, err
 	}
 
 	var cc CityCode
 	if err := xml.Unmarshal(xmlData, &cc); err != nil {
-		glog.Errorf(err.Error())
-		return err
+		glog.Errorf("fail to unmarshal xml file %v", err.Error())
+		return nil, nil, err
 	}
 
+	cityInfoSet := make(map[string]CityInfo)
+	countyInfoSet := make(map[string]CountyInfo)
 	for i := 0; i < len(cc.Provinces); i++ {
 		province := cc.Provinces[i]
 		for j := 0; j < len(province.Cities); j++ {
@@ -237,19 +237,19 @@ func loadCitycode() error {
 			cityInfoSet[city.Name] = cityInfo
 		}
 	}
-	return nil
+	return &cityInfoSet, &countyInfoSet, nil
 }
 
 func getCountyInfo(cityName string) (*CountyInfo, error) {
 	glog.Infof("get county code %s", cityName)
 
-	if info, ok := countyInfoSet[cityName]; ok {
+	if info, ok := (*countyInfoSet)[cityName]; ok {
 		return &info, nil
 	} else {
-		if info2, ok := cityInfoSet[cityName]; ok { // relay to sub county
+		if info2, ok := (*cityInfoSet)[cityName]; ok { // relay to sub county
 			glog.Infof("try to relay to sub county %s", cityName)
 			newName := info2.countyNames[0]
-			if info3, ok := countyInfoSet[newName]; ok {
+			if info3, ok := (*countyInfoSet)[newName]; ok {
 				return &info3, nil
 			}
 		}
@@ -384,9 +384,12 @@ func init() {
 		DB:       0,  // use default DB
 	})
 
-	if err := loadCitycode(); err != nil {
-		glog.Errorf(err.Error())
+	cityIS, countyIS, err := loadCitycode()
+	if err != nil {
+		glog.Errorf("fail to load city code %v", err.Error())
 	}
+	cityInfoSet = cityIS
+	countyInfoSet = countyIS
 }
 
 func getWeatherFromRemote2(info *CountyInfo, key string) {
@@ -426,15 +429,15 @@ var days = []string{
 
 func needUpdate(val string) bool {
 	day := val[:2]
-	_, _, curDay := time.Now().Date()
-	i, err := strconv.Atoi(day)
+	dayInRedis, err := strconv.Atoi(day)
 	if err != nil {
-		glog.Error("fail to get day %s", err)
+		glog.Errorf("fail to get day %s", err)
 		return true
 	}
 
-	glog.Infof("time in redis: %v while cur day: ", curDay)
-	if i != curDay {
+	_, _, curDay := time.Now().Date()
+	glog.Infof("time in redis: %v while cur day: %v", dayInRedis, curDay)
+	if dayInRedis != curDay {
 		return true
 	}
 	return false
@@ -446,6 +449,8 @@ func needUpdate(val string) bool {
 // [08日: [15时: {}, 24时: {}],  09日: [15时: {}, 24时: {}], 10日:[15时: {}, 24时: {}],  ]
 // 101190401_7d is 15日20时:n01_多云_5_东北风_微风|15日23时:n01_多云_1_东北风_3-4级|16日02时:n01_多云_1_东北风_微风
 func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string) error {
+	glog.Infof("source val: %v dst json: %v", val, ret)
+
 	sss := strings.Split(val, "|")
 	for i := 0; i < len(sss); i++ {
 		ss := strings.Split(sss[i], ":")
@@ -472,7 +477,7 @@ func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string
 		// out[hdr] = m
 		key := hdr[:2] + "日"
 		if len(*ret) == 0 {
-			glog.Infof("empty, init for first time %s", key)
+			glog.Infof("json is empty, add key to json %s", key)
 			*ret = append(*ret, map[string][]map[string]map[string]string{
 				key: make([]map[string]map[string]string, 0),
 			})
@@ -480,7 +485,7 @@ func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string
 
 		vv, ok := (*ret)[len(*ret)-1][key]
 		if !ok {
-			glog.Infof("not existing required key %s, create it", key)
+			glog.Infof("json has no key %s, fill it", key)
 			*ret = append(*ret, map[string][]map[string]map[string]string{
 				key: make([]map[string]map[string]string, 0),
 			})
@@ -488,7 +493,7 @@ func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string
 
 		vv, ok = (*ret)[len(*ret)-1][key]
 		if !ok {
-			glog.Errorf("fail to append element", ret)
+			glog.Errorf("fail to append element %v", ret)
 			continue
 		} else {
 			// log.Println(vv)
@@ -503,6 +508,42 @@ func weatherToJson2(val string, ret *[]map[string][]map[string]map[string]string
 
 	// log.Println(ret)
 	return nil
+}
+
+func getHtmlFromRemote(cityCode string, srvCode int) (string, error) {
+	// url1 := "http://www.weather.com.cn/weather/101221601.shtml"
+	url1 := "http://www.weather.com.cn/weather1d/" + cityCode + ".shtml"
+	// log.Println("url to get from remote srv", url1)
+	resp1, err := http.Get(url1)
+	if err != nil {
+		glog.Errorf("failed to get weather from remote server: %v", err.Error())
+		return "", nil
+	}
+	defer resp1.Body.Close()
+	buf1 := new(bytes.Buffer)
+	buf1.ReadFrom(resp1.Body)
+	if !strings.Contains(buf1.String(), "<!-- empty -->") { // empty html content {}
+		return buf1.String(), nil
+	}
+	log.Printf("get empty html: %v from remote srv: %v\n", url1, buf1.String())
+
+	var cmd = exec.Command("curl", url1)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	err = cmd.Wait()
+	if err != nil {
+		glog.Errorf("curl cmd also fails: %v, %v", string(output.Bytes()), err)
+		return "", err
+	}
+
+	s := string(output.Bytes())
+	log.Printf("cmd: %v output: %v\n", cmd, s)
+	return s, nil
 }
 
 func weatherHandler(req *restful.Request, resp *restful.Response) {
@@ -558,8 +599,11 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 
 		var ret2 []map[string][]map[string]map[string]string
 		val, err := redisClient.Get(key).Result()
+		// glog.Infof("in redis, key : %v, val: %v", key, val)
+
 		if err == redis.Nil || needUpdate(val) {
 			glog.Infof("weather for %s is nil or outdated, update from remote", key)
+
 			weather, err := getWeatherFromRemote(info.weatherCode, remoteServers[0])
 			if err != nil {
 				glog.Infof("fail to get from %s, try other servers", remoteServers[0])
@@ -567,6 +611,7 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 				// TODO: not necessary now
 				// getWeatherFromRemote2(info, key)
 			} else {
+				// glog.Infof("val to set in redis: %v", weather)
 				weatherStr, err := redisSet(redisClient, key, *weather)
 				if err != nil {
 					// TODO: do nothing since it's in loop
@@ -593,7 +638,7 @@ func weatherHandler(req *restful.Request, resp *restful.Response) {
 		// log.Println(ret2)
 
 		ret[days[i]] = ret2
-		glog.Infof("weather info for %s is %s %v\n", key, val, err)
+		glog.Infof("weather info to return for %s is %s\n", days[i], ret2)
 	}
 
 	resp.WriteAsJson(ret)
