@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/xml"
 	"flag"
+	"fmt"
 	"golang.org/x/net/html"
 	"io/ioutil"
 	"log"
@@ -57,18 +58,47 @@ func printWeather(m map[string]interface{}) {
 	}
 }
 
+type WeatherSrvNotSupportedError struct {
+}
+
+func (e WeatherSrvNotSupportedError) Error() string {
+	// TODO: should include srv info
+	return fmt.Sprintf("Current weather srv is unsupported: %v", e)
+}
+
+type EmptyWeatherInfoError struct {
+}
+
+func (e EmptyWeatherInfoError) Error() string {
+	return fmt.Sprintf("Weather is empty from remote: %v", e)
+}
+
+type InvalidTokenError struct {
+}
+
+func (e InvalidTokenError) Error() string {
+	return fmt.Sprintf("Invalid token error in html: %v", e)
+}
+
+type WeatherError struct {
+}
+
+func (e WeatherError) Error() string {
+	return fmt.Sprintf("Failed to get weather from remote: %v", e)
+}
+
 func getWeatherFromRemote(cityCode string, srvCode int) (*map[string]interface{}, error) {
 	glog.Infof("get weather for city %s from remote %v", cityCode, srvCode)
 
 	if srvCode != WCC { // TODO
 		glog.Errorf("only www.weather.com.cn supported now")
-		return nil, nil
+		return nil, WeatherSrvNotSupportedError{}
 	}
 
 	htmlStr, err := getHtmlFromRemote(cityCode, srvCode)
 	if err != nil || htmlStr == "" {
 		glog.Errorf("fail to get html from remote %v", cityCode)
-		return nil, nil
+		return nil, EmptyWeatherInfoError{}
 	}
 
 	s := strings.Replace(htmlStr, "^M", "", -1)
@@ -95,7 +125,7 @@ func getWeatherFromRemote(cityCode string, srvCode int) (*map[string]interface{}
 		// default:
 		// 	fmt.Println("neither end nor script, go on... ")
 		case tt == html.ErrorToken: // End of the document, we're done
-			return nil, nil
+			return nil, InvalidTokenError{}
 
 		case tt == html.TextToken:
 			t := z.Token()
@@ -148,7 +178,7 @@ func getWeatherFromRemote(cityCode string, srvCode int) (*map[string]interface{}
 	}
 
 	glog.Errorf("fail to get weather from remote")
-	return nil, nil
+	return nil, WeatherError{}
 }
 
 // <China>
@@ -240,6 +270,13 @@ func loadCitycode() (*map[string]CityInfo, *map[string]CountyInfo, error) {
 	return &cityInfoSet, &countyInfoSet, nil
 }
 
+type CountryInfoError struct {
+}
+
+func (e CountryInfoError) Error() string {
+	return fmt.Sprintf("Failed to get count info: %v", e)
+}
+
 func getCountyInfo(cityName string) (*CountyInfo, error) {
 	glog.Infof("get county code %s", cityName)
 
@@ -254,11 +291,18 @@ func getCountyInfo(cityName string) (*CountyInfo, error) {
 			}
 		}
 
-		return nil, nil
+		return nil, CountryInfoError{}
 	}
 }
 
 const Separator = "|"
+
+type HandleWeatherError struct {
+}
+
+func (e HandleWeatherError) Error() string {
+	return fmt.Sprintf("Failed to handle weather: %v", e)
+}
 
 func handleWeatherStr(s string, out map[string]interface{}) (string, error) {
 	idx := strings.Index(s, ",")
@@ -267,7 +311,7 @@ func handleWeatherStr(s string, out map[string]interface{}) (string, error) {
 		v := strings.Split(s[idx+1:], ",")
 		if len(v) < 5 {
 			glog.Errorf("sth wrong when split weather str %s", v)
-			return "", nil
+			return "", HandleWeatherError{}
 		}
 
 		len := len(v[2]) - 3 // remove ending strange "℃,"
@@ -286,11 +330,18 @@ func handleWeatherStr(s string, out map[string]interface{}) (string, error) {
 		ret := hdr + ":" + strings.Join(v, "_") // time1:temp1_cloud1|time2:temp2_cloud2
 		return ret, nil
 	} else {
-		return "", nil // TODO
+		return "", HandleWeatherError{} // TODO
 	}
 }
 
 const expiration = time.Duration(0) // todo:
+
+type RedisSetError struct {
+}
+
+func (e RedisSetError) Error() string {
+	return fmt.Sprintf("Failed to set redis: %v", e)
+}
 
 func redisSet(client *redis.Client, key string, weather map[string]interface{}) (string, error) {
 	glog.Infof("redis set value for key: %s", key)
@@ -356,7 +407,7 @@ func redisSet(client *redis.Client, key string, weather map[string]interface{}) 
 		}
 	}
 
-	return "", nil
+	return "", RedisSetError{}
 }
 
 const (
@@ -517,7 +568,7 @@ func getHtmlFromRemote(cityCode string, srvCode int) (string, error) {
 	resp1, err := http.Get(url1)
 	if err != nil {
 		glog.Errorf("failed to get weather from remote server: %v", err.Error())
-		return "", nil
+		return "", err
 	}
 	defer resp1.Body.Close()
 	buf1 := new(bytes.Buffer)
